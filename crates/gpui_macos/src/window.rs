@@ -3297,7 +3297,17 @@ extern "C" fn display_layer(this: &Object, _: Sel, _: id) {
     let window_state = unsafe { get_window_state(this) };
     let mut lock = window_state.lock();
     if let Some(mut callback) = lock.request_frame_callback.take() {
-        lock.renderer.set_presents_with_transaction(true);
+        // Present with the Core Animation transaction only while the window is resized live, to
+        // keep its contents in step with the frame. A display asked for at other times (an app
+        // drawing an input's frame without waiting for the display link) presents like the
+        // display link does: drawables presented with a transaction outside a resize could stay
+        // held until a later commit and starve the layer's pool, so that `nextDrawable` waited
+        // out its one-second timeout.
+        let in_live_resize: BOOL = unsafe { msg_send![this, inLiveResize] };
+        let with_transaction = in_live_resize == YES;
+        if with_transaction {
+            lock.renderer.set_presents_with_transaction(true);
+        }
         lock.stop_display_link();
         drop(lock);
         callback(RequestFrameOptions {
@@ -3308,7 +3318,9 @@ extern "C" fn display_layer(this: &Object, _: Sel, _: id) {
 
         let mut lock = window_state.lock();
         lock.request_frame_callback = Some(callback);
-        lock.renderer.set_presents_with_transaction(false);
+        if with_transaction {
+            lock.renderer.set_presents_with_transaction(false);
+        }
         lock.start_display_link();
     }
 }
